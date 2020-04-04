@@ -5,19 +5,24 @@ date: "3/29/2020"
 output: html_document
 ---
 
-```{r setup, include=FALSE}
+```{r setup}
 knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
 library(gt)
 library(maptools)
 library(raster)
-library(tigris)
 library(sf)
 library(janitor)
+library(rgdal)
 library(rgeos)
 library(gganimate)
 library(transformr)
 
+library(tidycensus)
+```
+
+
+```{r import}
 census <- readOGR(dsn = './gz_2010_us_050_00_5m','gz_2010_us_050_00_5m')
 corona <- read_csv('us-counties.csv')
 
@@ -25,7 +30,7 @@ census.points = fortify(census, region = 'GEO_ID')
 
 census@data <- census@data %>%
   mutate(fips = paste(STATE,COUNTY,sep='')) %>%
-  inner_join(corona, by = c('fips', 'NAME' = 'county')) %>%
+  full_join(corona, by = c('fips', 'NAME' = 'county')) %>%
   clean_names()
 ```
 
@@ -33,15 +38,17 @@ census@data <- census@data %>%
 # if (!require(gpclib)) install.packages("gpclib", type="source")
 # gpclibPermit()
 
- census.points <- census.points %>%
-  left_join(census@data, by = c('id' = 'geo_id'))
+
+
+ covid <- census.points %>%
+  full_join(census@data, by = c('id' = 'geo_id'))
 
 ```
 
 ```{r}
-hawaii <- census.points %>% filter(state == '15')
-
-today <- census.points %>% filter(date == '2020-04-02', !state %in% c('15', '02'))
+mainland <- census@data %>%
+  full_join(census.points, by = c('geo_id' = 'id')) %>%
+  filter(!state %in% c('15', '02','03','07','14','43','52'), date >= '2020-04-01')
 
 get_cases <- function(tbl = hawaii, cur_day){
   tbl %>%
@@ -53,29 +60,88 @@ get_cases <- function(tbl = hawaii, cur_day){
     pull(total_cases)
 }
 
-ggplot(hawaii, aes(long, lat, group = group, fill = cases)) +
-  geom_polygon() +
-  # geom_path(color = id) +
-  # scale_fill_gradient(high = '#105010', low = '#ccffcc', na.value = '#ccffcc') +
-  labs(title = 'Total Confirmed Coronavirus Cases in Hawaii',
-       subtitle = paste('Date: {closest_state}'),
-       caption = 'Source: New York Times') +
-  # annotate('text', x = -159, y = 21, hjust = 0, label = {closest_state}) +
-  theme_void() #+
-  # transition_states(states = date, wrap = T)
+usa <- covid %>%
+  filter(!is.na(id),
+         !state %in% c('03','07','14','43','52'))
 
-# anim_save(filename = 'hawaii_covid.gif')
+ggplot(mainland, aes(long, lat, group = group, fill = cases)) +
+  geom_polygon() +
+  geom_path(alpha = 0.03) +
+  scale_fill_gradient(low = '#ddffbb', high = rgb(1, 0.2, 0.2), 
+                      na.value = '#dddddd', trans = 'log10') +
+  scale_y_continuous(limits = c(25, 50)) +
+  scale_x_continuous(limits = c(-125, -67)) +
+  labs(title = 'Total Confirmed Coronavirus Cases by County',
+       subtitle = paste('Data from April 3, 2020'),
+       caption = 'Source: New York Times \n Data for some counties missing.',
+       fill = 'Cases', fips = 'County') +
+  theme_minimal()# +
+  # transition_states(states = day)
+
+ggsave(filename = 'plots/april03_us.png', width =  7, height = 5)
+
+# anim_save(filename = 'hawaii_covid.gif',
+#           width = 7, height = 5)
+```
+
+```{r hawaii}
+hi <- census@data %>% 
+  filter(date == '2020-04-03') %>%
+  full_join(census.points, by = c('geo_id' = 'id')) %>%
+  filter(state %in% c('15'))
+
+ggplot(hi, aes(long, lat, group = group, fill = cases)) +
+  geom_polygon() +
+  geom_path(alpha = 0.3) +
+  scale_fill_gradient(low = '#ffeeee', high = '#f00000', 
+                      na.value = '#dddddd', trans = 'log10') +
+  # scale_y_continuous(limits = c(34.9, 36.7)) +
+  # scale_x_continuous(limits = c(-90.5, -81.5)) +
+  labs(title = 'Total Confirmed Coronavirus Cases by County in Hawaii',
+       subtitle = paste('Data from April 3, 2020'),
+       caption = 'Source: New York Times',
+       x = 'longitude', y = 'latitude',
+       fill = 'Cases', fips = 'County') +
+  coord_equal() +
+  theme_minimal() +
+  theme(legend.position = c(0.2, 0.4),
+        legend.box.background = element_rect(fill = '#ffffff', color = '#aaaaaa'))
+
+ggsave(filename = 'plots/april03_hi.png', width = 7, height = 5)
 ```
 
 
-```{r}
-hawaii %>%
-    group_by(county) %>%
-    filter(date == 2) %>%
-    .[c('id','cases','date')] %>%
-    unique() %>%
-    summarize(total_cases = sum(cases)) #%>%
-#     pull(total_cases)
+
+```{r tennesee}
+# tn_pop <- get_acs(geography = 'tract', year = 2018, state = '47',
+#                   variables = 'B01003_001', geometry = TRUE)
+
+tn <- census@data %>% 
+  filter(date == '2020-04-03') %>%
+  full_join(census.points, by = c('geo_id' = 'id')) %>%
+  filter(state %in% c('47'))
+
+ggplot(tn, aes(long, lat, group = group, fill = cases)) +
+  geom_polygon() +
+  geom_path(alpha = 0.3) +
+  scale_fill_gradient(low = '#ffeeee', high = '#f00000', 
+                      na.value = '#dddddd', trans = 'log10') +
+  scale_y_continuous(limits = c(34.9, 36.7)) +
+  scale_x_continuous(limits = c(-90.5, -81.5)) +
+  labs(title = 'Total Confirmed Coronavirus Cases by County in Tennessee',
+       subtitle = paste('Data from April 3, 2020'),
+       caption = 'Source: New York Times \n Data for some counties missing.',
+       x = 'longitude', y = 'latitude',
+       fill = 'Cases', fips = 'County') +
+  coord_equal() +
+  theme_minimal()
+
+ggsave(filename = 'plots/april03_tn.png', width = 7, height = 5)
+
+
+tn[,c(2:5, 7:8, 10)] %>% 
+  unique() %>% 
+  filter(is.na(state), str_detect(name, 'City', negate = T))
 ```
 
 
