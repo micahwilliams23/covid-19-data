@@ -1,0 +1,81 @@
+---
+title: "US Coronavirus Cases"
+author: "Micah Williams"
+date: "3/29/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(gt)
+library(maptools)
+library(raster)
+library(tigris)
+library(sf)
+library(janitor)
+library(rgeos)
+library(gganimate)
+library(transformr)
+
+census <- readOGR(dsn = './gz_2010_us_050_00_5m','gz_2010_us_050_00_5m')
+corona <- read_csv('us-counties.csv')
+
+census.points = fortify(census, region = 'GEO_ID')
+
+census@data <- census@data %>%
+  mutate(fips = paste(STATE,COUNTY,sep='')) %>%
+  inner_join(corona, by = c('fips', 'NAME' = 'county')) %>%
+  clean_names()
+```
+
+```{r}
+# if (!require(gpclib)) install.packages("gpclib", type="source")
+# gpclibPermit()
+
+ census.points <- census.points %>%
+  left_join(census@data, by = c('id' = 'geo_id'))
+
+```
+
+```{r}
+hawaii <- census.points %>% filter(state == '15')
+
+today <- census.points %>% filter(date == '2020-04-02', !state %in% c('15', '02'))
+
+get_cases <- function(tbl = hawaii, cur_day){
+  tbl %>%
+    group_by(county) %>%
+    filter(date == cur_day) %>%
+    .[c('id','cases','date')] %>%
+    unique() %>%
+    summarize(total_cases = sum(cases)) %>%
+    pull(total_cases)
+}
+
+ggplot(hawaii, aes(long, lat, group = group, fill = cases)) +
+  geom_polygon() +
+  # geom_path(color = id) +
+  # scale_fill_gradient(high = '#105010', low = '#ccffcc', na.value = '#ccffcc') +
+  labs(title = 'Total Confirmed Coronavirus Cases in Hawaii',
+       subtitle = paste('Date: {closest_state}'),
+       caption = 'Source: New York Times') +
+  # annotate('text', x = -159, y = 21, hjust = 0, label = {closest_state}) +
+  theme_void() #+
+  # transition_states(states = date, wrap = T)
+
+# anim_save(filename = 'hawaii_covid.gif')
+```
+
+
+```{r}
+hawaii %>%
+    group_by(county) %>%
+    filter(date == 2) %>%
+    .[c('id','cases','date')] %>%
+    unique() %>%
+    summarize(total_cases = sum(cases)) #%>%
+#     pull(total_cases)
+```
+
+
