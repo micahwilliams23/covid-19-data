@@ -1,0 +1,13 @@
+name: covid-19-data
+title: covid-19-data
+username:
+account: micah-williams
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 2062561
+bundleId: 2973012
+url: https://micah-williams.shinyapps.io/covid-19-data/
+when: 1586127606.2512
+asMultiple: FALSE
+asStatic: FALSE
+ignoredFiles: data/cali_cases.csv|data/cali_geom.csv
