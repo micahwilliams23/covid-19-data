@@ -8,22 +8,16 @@ output: html_document
 ```{r setup}
 knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
-library(gt)
 library(maptools)
-library(raster)
-library(sf)
 library(janitor)
-library(rgdal)
-library(rgeos)
 library(gganimate)
 library(transformr)
-
-library(tidycensus)
 ```
 
 
-```{r import}
-census <- readOGR(dsn = './gz_2010_us_050_00_5m','gz_2010_us_050_00_5m')
+
+```{r import_data}
+census <- rgdal::readOGR(dsn = './gz_2010_us_050_00_5m','gz_2010_us_050_00_5m')
 corona <- read_csv('us-counties.csv')
 
 census.points = fortify(census, region = 'GEO_ID')
@@ -35,14 +29,8 @@ census@data <- census@data %>%
 ```
 
 ```{r}
-# if (!require(gpclib)) install.packages("gpclib", type="source")
-# gpclibPermit()
-
-
-
  covid <- census.points %>%
   full_join(census@data, by = c('id' = 'geo_id'))
-
 ```
 
 ```{r}
@@ -78,7 +66,7 @@ ggplot(mainland, aes(long, lat, group = group, fill = cases)) +
   theme_minimal()# +
   # transition_states(states = day)
 
-ggsave(filename = 'plots/april03_us.png', width =  7, height = 5)
+ggsave(filename = 'plots/20200403_us.png', width =  7, height = 5)
 
 # anim_save(filename = 'hawaii_covid.gif',
 #           width = 7, height = 5)
@@ -107,7 +95,7 @@ ggplot(hi, aes(long, lat, group = group, fill = cases)) +
   theme(legend.position = c(0.2, 0.4),
         legend.box.background = element_rect(fill = '#ffffff', color = '#aaaaaa'))
 
-ggsave(filename = 'plots/april03_hi.png', width = 7, height = 5)
+ggsave(filename = 'plots/20200403_hi.png', width = 7, height = 5)
 ```
 
 
@@ -121,7 +109,7 @@ tn <- census@data %>%
   full_join(census.points, by = c('geo_id' = 'id')) %>%
   filter(state %in% c('47'))
 
-ggplot(tn, aes(long, lat, group = group, fill = cases)) +
+tn_map_anim <- ggplot(tn, aes(long, lat, group = group, fill = cases)) +
   geom_polygon() +
   geom_path(alpha = 0.3) +
   scale_fill_gradient(low = '#ffeeee', high = '#f00000', 
@@ -136,12 +124,130 @@ ggplot(tn, aes(long, lat, group = group, fill = cases)) +
   coord_equal() +
   theme_minimal()
 
-ggsave(filename = 'plots/april03_tn.png', width = 7, height = 5)
+# animate(tn_map_anim, end_pause = 20, width = 7, height = 5, units = 'in', res = 72)
 
+ggsave(filename = 'plots/20200403_tn.png', width = 7, height = 5)
 
-tn[,c(2:5, 7:8, 10)] %>% 
-  unique() %>% 
-  filter(is.na(state), str_detect(name, 'City', negate = T))
 ```
 
+```{r}
+tx <- census@data %>% 
+  # filter(date == '2020-04-03') %>%
+  full_join(census.points, by = c('geo_id' = 'id')) %>%
+  filter(state %in% c('48'))
+
+tx_map_anim <- ggplot(tx_all_counties, aes(long, lat, group = group, fill = cases)) +
+  geom_polygon() +
+  geom_path(alpha = 0.3) +
+  scale_fill_gradient(low = '#ffeeee', high = '#f00000', 
+                      na.value = '#dddddd', trans = 'log10') +
+  # scale_y_continuous(limits = c(34.9, 36.7)) +
+  # scale_x_continuous(limits = c(-90.5, -81.5)) +
+  labs(title = 'Total Confirmed Coronavirus Cases by County in Texas',
+       subtitle = 'Date: {closest_state}',
+       caption = 'Source: New York Times \n Data for some counties missing.',
+       x = 'longitude', y = 'latitude',
+       fill = 'Cases', fips = 'County') +
+  coord_equal() +
+  theme_minimal() #+
+  transition_states(states = date)
+
+# animate(tx_map_anim, end_pause = 20, width = 7, height = 5, units = 'in', res = 72)  
+
+# anim_save(filename = 'plots/tx_anim.gif', fig.height = 5, fig.width = 7)
+```
+
+```{r}
+tx_geom <- tx %>%
+  filter(date == '2020-04-03') %>%
+  .[,c(1:7, 12:17)] %>%
+  unique()
+
+dates <- tx %>% filter(!is.na(date)) %>% pull(date) %>% unique()
+# all_tx_counties <- 
+  
+tx_all_counties <- tibble(date = dates,
+  date_rep = map(dates, ~tx_geom)) %>%
+  unnest(date_rep) %>%
+  full_join(tx, by = c(names(tx_geom), 'date'))
+
+glimpse(tx_all_counties)
+```
+
+```{r}
+ca <- census@data %>% 
+  filter(!is.na(date)) %>%
+  full_join(census.points, by = c('geo_id' = 'id')) %>%
+  filter(state == '06')
+
+get_cases <- function(date){
+
+  data %>%
+    filter(date == date) %>%
+    select(geo_id:deaths) %>%
+    unique() %>%
+    pull(cases) %>%
+    sum()
+}
+  
+
+ca_map_anim <- ggplot(ca, aes(long, lat, group = group, fill = cases)) +
+  geom_polygon() +
+  geom_path(alpha = 0.3) +
+  scale_fill_gradient(low = '#ffeeee', high = '#f00000', 
+                      na.value = '#dddddd', trans = 'log10') +
+  labs(title = 'Total Confirmed Coronavirus Cases by County in California',
+       subtitle = 'Date: {frame_time}',
+       caption = 'Source: New York Times',
+       x = 'longitude', y = 'latitude',
+       fill = 'Cases', fips = 'County') +
+  coord_equal() +
+  theme_minimal() +
+  transition_time(date)
+
+animate(ca_map_anim, end_pause = 20, width = 7, height = 5, units = 'in', res = 72)
+
+# ggsave(filename = 'plots/april03_ca.png', width = 7, height = 5)
+anim_save(filename = 'plots/20200403_caNEW.gif', fig.height = 5, fig.width = 7, end_pause = 10)
+```
+
+```{r}
+corona %>% 
+  filter(fips %in% c('06037', '53033', '15003')) %>% 
+  ggplot(aes(date, cases, color = fips)) + 
+  geom_line(size = 1.1) +
+  geom_point() +
+  scale_color_discrete(name = 'County',
+                       labels = c('Los Angeles County',
+                                  'Honolulu County',
+                                  'King County (Seattle)')) +
+  labs(title = 'Confirmed Coronavirus Cases',
+       subtitle = 'Data as of April 3',
+       caption = 'Source: New York Times') +
+  theme_minimal() +
+  theme(legend.position = 'bottom') +
+  transition_reveal(along = date)
+
+anim_save(filename = 'plots/20200403_counties.gif', fig.height = 5, fig.width = 7, end_pause = 10)
+```
+
+```{r}
+corona %>% 
+  filter(fips %in% c('06037', '53033', '15003', '47037')) %>% 
+  ggplot(aes(date, cases, color = fips)) + 
+  geom_line(size = 1.1) +
+  scale_color_discrete(name = 'County',
+                       breaks = c('06037', '53033', '15003', '47037'),
+                       labels = c('Los Angeles County',
+                                  'King County (Seattle)',
+                                  'Honolulu County',
+                                  'Davidson County (Nashville)')) +
+  labs(title = 'Confirmed Coronavirus Cases',
+       subtitle = 'Data as of April 3',
+       caption = 'Source: New York Times') +
+  theme_minimal() +
+  theme(legend.position = c(0.2,0.5))
+
+ggsave(filename = 'plots/20200403_counties.png', height = 5, width = 7)
+```
 
