@@ -6,20 +6,17 @@ output: html_document
 ---
 
 ```{r setup}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = FALSE)
 library(tidyverse)
 library(maptools)
 library(janitor)
 library(gganimate)
 library(transformr)
 library(geojsonio)
-library(lubridate)
 ```
 
-```{r import_data}
+```{r import_data, message=FALSE, warning=FALSE}
 today = Sys.Date()
-
-date_num(today)
 
 date_num <- function(date){
   str_replace_all(as.character(date), '-', '')
@@ -29,60 +26,89 @@ w_filename <- function(name, path = 'plots/', filetype = 'png'){
   paste(path, date_num(Sys.Date()), '_', name, '.', filetype, sep = '')
 }
 
-census <- rgdal::readOGR(dsn = './gz_2010_us_050_00_5m','gz_2010_us_050_00_5m')
-corona <- read_csv('us-counties.csv')
+find_limits <- function(tbl){
+  tbl %>% 
+  summarize(range_long = list(range(long)), 
+            range_lat = list(range(lat))) %>% 
+  mutate(
+    sugg_long = list(c(
+      round(range_long[[1]][1]) - 1.5,
+      round(range_long[[1]][2]) + 1.5)),
+    
+    sugg_lat = list(c(
+      round(range_lat[[1]][1]) - 1.5,
+      round(range_lat[[1]][2]) + 1.5)),
+    ) %>%
+  transpose() %>% .[[1]]
+} 
 
-census.points = fortify(census, region = 'GEO_ID')
+census <- rgdal::readOGR(dsn = './gz_2010_us_050_00_5m','gz_2010_us_050_00_5m')
+corona <- read_csv('us-counties.csv', col_types = c('Dcccii'))
+
+census.points <- fortify(census, region = 'GEO_ID') %>% 
+  mutate(id = group) %>%
+  select(-group) 
 
 census@data <- census@data %>%
-  mutate(fips = paste(STATE,COUNTY,sep='')) %>%
+  mutate(fips = paste(STATE,COUNTY,sep=''))%>%
   full_join(corona, by = c('fips', 'NAME' = 'county')) %>%
   clean_names()
 
 covid <- census.points %>%
-  full_join(census@data, by = c('id' = 'geo_id'))
-
-states <- 
-    geojson_read( 
-        x = "https://raw.githubusercontent.com/PublicaMundi/MappingAPI/master/data/geojson/us-states.json"
-        , what = "sp"
-    )
+  full_join(census@data, by = c('id' = 'geo_id')) %>%
+  mutate(cases = if_else(cases %in% c(0, NA), NA_integer_, cases))
+  
+states <- geojson_read(x = "https://raw.githubusercontent.com/PublicaMundi/MappingAPI/master/data/geojson/us-states.json", 
+                 what = "sp")
 
 # repair geometry... intersecting points
 # (code from https://stackoverflow.com/questions/46003060/error-using-region-argument-when-fortifying-shapefile)
-rgeos::gIsValid(states)
 states <- rgeos::gBuffer(states, byid = T, width = 0)
-rgeos::gIsValid(states)
 
-states.points <- fortify(states, region = 'id')
+state_lines <- fortify(states, region = 'id')
+
+county_lines <- census@data %>%
+  select(c(geo_id:county,fips)) %>%
+  full_join(census.points,  by = c('geo_id' = 'id')) %>%
+  filter(!is.na(long), !is.na(lat))
+
+rm(census, census.points, corona, states)
 ```
 
 ```{r}
-mainland <- covid %>%
-  filter(!state %in% c('15', '02','03','07','14','43','52'), date >= '2020-04-01')
+all_fips <- covid %>% pull(state) %>% unique()
+outside_fips <- c('15', '02','03','07','14','43','52', '72')
+mainland_fips <- all_fips[!all_fips %in% outside_fips & !is.na(all_fips)]
 
-usa <- covid %>%
-  filter(!is.na(id),
-         !state %in% c('03','07','14','43','52'))
+mainland_fips
+```
 
-ggplot(mainland, aes(long, lat, group = group, fill = cases)) +
-  geom_polygon() +
-  geom_path(alpha = 0.03) +
-  scale_fill_gradient(low = '#ddffbb', high = rgb(1, 0.2, 0.2), 
-                      na.value = '#dddddd', trans = 'log10') +
-  scale_y_continuous(limits = c(25, 50)) +
-  scale_x_continuous(limits = c(-125, -67)) +
-  labs(title = 'Total Confirmed Coronavirus Cases by County',
-       subtitle = paste('Data from April 3, 2020'),
-       caption = 'Source: New York Times \n Data for some counties missing.',
-       fill = 'Cases', fips = 'County') +
-  theme_minimal()# +
-  # transition_states(states = day)
 
-# ggsave(filename = 'plots/20200403_us.png', width =  7, height = 5)
+```{r fig.height = 9, fig.width = 12}
+plot_states <- function(fips_codes){
+  join_by_cols <-  c("long", "lat", "order", "hole", "piece", "id" = "geo_id", "state", "county", "fips")
+  
+  x <- covid %>%
+    filter(state %in% fips_codes,
+           date == max(date, na.rm = T)) %>%
+    full_join(county_lines[county_lines$state %in% fips_codes,],
+              by = join_by_cols)
+  
+  ggplot(x, aes(long, lat, group = group)) +
+    geom_polygon(aes(fill = cases)) +
+    geom_path(color = '#aaaaaa', alpha = 0.3) +
+    scale_fill_gradient(low = '#ddbbff', high = '#e01a1a', 
+                        trans = 'log10', na.value = '#eeeeee') +
+    labs(title = 'Total Confirmed Coronavirus Cases by County',
+         subtitle = paste('Data from', format(x$date,'%B %d, %Y')),
+         caption = 'Source: New York Times \n Data for some counties missing.',
+         fill = 'Cases', fips = 'County') +
+    theme_void() +
+    theme(plot.margin = unit(rep(0.5,4), 'cm'))
+}
 
-# anim_save(filename = 'hawaii_covid.gif',
-#           width = 7, height = 5)
+plot_states(mainland_fips)
+ggsave(filename = 'plots/20200403_us.png', width =  12, height = 9)
 ```
 
 ```{r hawaii}
