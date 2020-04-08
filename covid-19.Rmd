@@ -13,6 +13,9 @@ library(janitor)
 library(gganimate)
 library(transformr)
 library(geojsonio)
+library(tidycensus)
+library(gridExtra)
+# census_api_key('f7c07c55451ec943fc1b438d589f8b068aeb43fc', install = T)
 ```
 
 ```{r import_data, message=FALSE, warning=FALSE}
@@ -26,21 +29,12 @@ w_filename <- function(name, path = 'plots/', filetype = 'png'){
   paste(path, date_num(Sys.Date()), '_', name, '.', filetype, sep = '')
 }
 
-find_limits <- function(tbl){
-  tbl %>% 
-  summarize(range_long = list(range(long)), 
-            range_lat = list(range(lat))) %>% 
-  mutate(
-    sugg_long = list(c(
-      range_long[[1]][1] - 0.1,
-      range_long[[1]][2] + 0.1)),
-    
-    sugg_lat = list(c(
-      range_lat[[1]][1] - 0.05,
-      range_lat[[1]][2] + 0.05)),
-    ) %>%
-  transpose() %>% .[[1]]
-} 
+get_cases <- function(tbl, cur_date){
+  tbl %>%
+    filter(date == cur_date) %>%
+    pull(cases) %>%
+    sum()
+}
 
 census <- rgdal::readOGR(dsn = './gz_2010_us_050_00_5m','gz_2010_us_050_00_5m')
 corona <- read_csv('us-counties.csv', col_types = c('Dcccii'))
@@ -71,18 +65,27 @@ county_lines <- census@data %>%
   full_join(census.points,  by = c('geo_id' = 'id')) %>%
   filter(!is.na(long), !is.na(lat))
 
-state_fips <- census@data %>% 
+state_fips_df <- census@data %>% 
   select(c(state, state_2)) %>% 
   unique() %>% 
   filter(!is.na(state), !is.na(state_2)) %>% 
-  arrange(state) %>%
-  t()
+  arrange(state)
 
-colnames(state_fips) <- state_fips[2,]
+state_fips <- state_fips_df %>%
+  select(code = state) %>%
+  mutate(code = as.character(code)) %>%
+  t() %>%
+  data.frame()
 
-state_fips <- state_fips %>% data.frame() %>% slice(1) %>% clean_names()
+colnames(state_fips) <- make_clean_names(state_fips_df$state_2)
 
-rm(census, census.points, corona, states)
+get_state_fips <- function(state){
+  state_fips[state] %>% pull() %>% as.character()
+}
+
+corona <- corona %>% mutate(state_code = map_chr(fips, ~str_extract(., '\\d{2}')))
+
+rm(census, census.points, states)
 ```
 
 ```{r}
@@ -96,8 +99,8 @@ mainland_fips
 
 ```{r plot_states, fig.height = 9, fig.width = 12}
 plot_states <- function(fips_codes, 
-                        limits.x = find_limits(x.outline)$sugg_long, 
-                        limits.y = find_limits(x.outline)$sugg_lat,
+                        # limits.x = find_limits(x.outline)$sugg_long, 
+                        # limits.y = find_limits(x.outline)$sugg_lat,
                         title = '',
                         setdate = today - 1,
                         outlines = county_lines){
@@ -121,16 +124,16 @@ plot_states <- function(fips_codes,
     
     scale_fill_gradient(low = '#ddbbff', high = '#e01a1a', 
                         trans = 'log10', na.value = '#bbbbbb') +
-    
-    scale_x_continuous(limits = limits.x) +
-    scale_y_continuous(limits = limits.y) +
+
+    # scale_x_continuous(limits = limits.x) +
+    # scale_y_continuous(limits = limits.y) +
     
     labs(title = paste(title,'Total Confirmed Coronavirus Cases by County'),
          subtitle = paste('Data from', format(x.data$date,'%B %d, %Y')),
-         caption = 'Source: New York Times \n Data for some counties missing.',
+         caption = 'Source: New York Times \nData for some counties missing. \nCreated by Micah Williams',
          fill = 'Cases', fips = 'County') +
     
-    theme_minimal() +
+    theme_void() +
     coord_equal() +
     theme(panel.grid = element_blank())
 }
@@ -141,8 +144,6 @@ plot_states <- function(fips_codes,
 
 ```{r animate_states, fig.height = 9, fig.width = 12}
 animate_states <- function(fips_codes, 
-                        limits.x = find_limits(x.outline)$sugg_long, 
-                        limits.y = find_limits(x.outline)$sugg_lat,
                         title = '',
                         outlines = county_lines){
   
@@ -163,26 +164,22 @@ animate_states <- function(fips_codes,
     scale_fill_gradient(low = '#ddbbff', high = '#e01a1a', 
                         trans = 'log10', na.value = '#bbbbbb') +
     
-    scale_x_continuous(limits = limits.x) +
-    scale_y_continuous(limits = limits.y) +
-    
     labs(title = paste(title,'Total Confirmed Coronavirus Cases by County'),
          subtitle = 'Date: {frame_time}',
-         caption = 'Source: New York Times \n Data for some counties missing.',
+         caption = 'Source: New York Times \n Data for some counties missing. \n Created by Micah Williams',
          fill = 'Cases', fips = 'County') +
     
-    theme_minimal() +
+    theme_void() +
     coord_equal() +
     theme(panel.grid = element_blank()) +
     transition_time(x.data$date)
   
-  animate(new_animation, end_pause = 20, width = 8, height = 6, units = 'in', res = 144)
+  animate(new_animation, end_pause = 20, width = 8, height = 5, units = 'in', res = 144)
 }
 
 animate_states('15', title = 'Hawaii')
 anim_save(filename = 'plots/hawaii.gif')
 ```
-
 
 ```{r hawaii}
 plot_states('15', outlines = county_lines, setdate = '2020-04-06')
@@ -284,9 +281,98 @@ corona %>%
 anim_save(filename = 'plots/20200403_counties.gif', fig.height = 5, fig.width = 7, end_pause = 10)
 ```
 
-```{r}
+```{r california}
 ca_anim <- animate_states('06', title = 'California')
 
 anim_save('plots/ca.gif', height = 6, width = 8)
+```
+
+
+```{r texas, fig.width = 5, fig.height = 9}
+tx_county_pops <- get_acs(geography = 'county',
+                          variables = 'B01003_001E', 
+                          state = get_state_fips('texas')) %>%
+  select(c(fips = GEOID, pop = estimate))
+
+tx <- corona %>% filter(state_code == get_state_fips('texas')) %>%
+  left_join(tx_county_pops, by = c('fips')) %>%
+  mutate(cases_per_1000 = cases / pop * 1000)
+
+tx_summary <- tx %>%
+  group_by(date) %>%
+  summarize(total_cases = sum(cases),
+            cases_per_1000 = total_cases / sum(tx_county_pops$pop) * 1000)
+
+tx_counties_anim <- tx %>%
+  ggplot(aes(date,cases_per_1000, color = county)) +
+  geom_line(alpha = 0.25, size = 0.8) +
+  geom_line(data = tx_summary, color = 'steelblue',
+            alpha = 1, size = 1.5) +
+  labs(y = 'Cases per 1,000 People') +
+  theme(legend.position = 'none')
+
+grid.arrange(
+tx_counties_anim + labs(title = 'Confirmed Coronavirus Cases per 1,000 people in Texas, by County',
+                        subtitle = 'Linear scale', x = '')+
+  annotate('text', x = as.Date('2020-02-22'), y = 0.15,
+           label = 'Texas (total)',
+           size = 4, hjust = 0),
+tx_counties_anim + 
+  scale_y_log10(breaks = 1*10^c(-4:0),
+                labels = format(1*10^c(-4:0), 
+                                scientific = T)) +
+  theme(axis.text.y = element_text(angle = 35)) +
+  labs(subtitle = 'Logarithmic scale',
+       caption = 'Source: New York Times, US Census\n Created by Micah Williams'),
+nrow = 2)
+
+ggsave(filename = 'plots/texas_infectionrates.png', height = 9, width = 5)
+
+  #+
+  # transition_reveal(date)
+
+
+tx %>% filter(date == '2020-03-25') %>% arrange(desc(cases_per_1000))
+
+plot_states
+```
+
+```{r}
+plot_states("42", title = 'Pennsylania')
+
+animate_states("42", "Pennsylvania")
+anim_save(filename = 'plots/PA_0.5fps_nowidth.gif', 
+          width = 8, height = 4, fps = 0.5)
+```
+
+```{r Pennsylvania}
+map_plot <- animate_states("42", title = 'Pennsylania')
+
+line_plot <- corona %>% 
+  filter(state_code == '42') %>%
+  group_by(date) %>%
+  summarize(total_cases = sum(cases)) %>%
+  ggplot(aes(date, total_cases)) +
+  geom_line(size = 1.2, color = '#e01a1a') +
+  labs(y = 'Total Confirmed Cases', x = 'Date',
+       title = 'Confirmed Cases of Coronavirus in Pennsylvania',
+       subtitle = 'Date: {frame_along}',
+       caption = 'Source: New York Times \n Created by Micah Williams') +
+  theme_minimal() + 
+  scale_y_continuous(breaks = seq(0,12500,2500)) +
+  transition_reveal(date)
+
+line_anim <- animate(line_plot, end_pause = 20)
+
+grid.arrange(map_plot, line_anim, nrow = 2,
+                        top = grid::textGrob("Confirmed Cases of Covid-19 in Pennsylvania by County",
+                                             gp=grid::gpar(fontsize=16, font=2)))
+
+map_plot
+anim_save(filename = 'plots/pa_1.gif', animation = map_plot)
+line_anim
+anim_save(filename = 'plots/pa_2.gif', animation = line_anim)
+
+# ggsave(filename = 'plots/PA_test.png', width = 8, height = 5)
 ```
 
