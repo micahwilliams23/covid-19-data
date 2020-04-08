@@ -32,12 +32,12 @@ find_limits <- function(tbl){
             range_lat = list(range(lat))) %>% 
   mutate(
     sugg_long = list(c(
-      round(range_long[[1]][1]) - 1.5,
-      round(range_long[[1]][2]) + 1.5)),
+      range_long[[1]][1] - 0.1,
+      range_long[[1]][2] + 0.1)),
     
     sugg_lat = list(c(
-      round(range_lat[[1]][1]) - 1.5,
-      round(range_lat[[1]][2]) + 1.5)),
+      range_lat[[1]][1] - 0.05,
+      range_lat[[1]][2] + 0.05)),
     ) %>%
   transpose() %>% .[[1]]
 } 
@@ -45,9 +45,7 @@ find_limits <- function(tbl){
 census <- rgdal::readOGR(dsn = './gz_2010_us_050_00_5m','gz_2010_us_050_00_5m')
 corona <- read_csv('us-counties.csv', col_types = c('Dcccii'))
 
-census.points <- fortify(census, region = 'GEO_ID') %>% 
-  mutate(id = group) %>%
-  select(-group) 
+census.points <- fortify(census, region = 'GEO_ID')
 
 census@data <- census@data %>%
   mutate(fips = paste(STATE,COUNTY,sep=''))%>%
@@ -65,105 +63,131 @@ states <- geojson_read(x = "https://raw.githubusercontent.com/PublicaMundi/Mappi
 # (code from https://stackoverflow.com/questions/46003060/error-using-region-argument-when-fortifying-shapefile)
 states <- rgeos::gBuffer(states, byid = T, width = 0)
 
-state_lines <- fortify(states, region = 'id')
+state_lines <- fortify(states, region = 'id') %>%
+  mutate(state = id) %>% select(-id)
 
 county_lines <- census@data %>%
   select(c(geo_id:county,fips)) %>%
   full_join(census.points,  by = c('geo_id' = 'id')) %>%
   filter(!is.na(long), !is.na(lat))
 
+state_fips <- census@data %>% 
+  select(c(state, state_2)) %>% 
+  unique() %>% 
+  filter(!is.na(state), !is.na(state_2)) %>% 
+  arrange(state) %>%
+  t()
+
+colnames(state_fips) <- state_fips[2,]
+
+state_fips <- state_fips %>% data.frame() %>% slice(1) %>% clean_names()
+
 rm(census, census.points, corona, states)
 ```
 
 ```{r}
-all_fips <- covid %>% pull(state) %>% unique()
-outside_fips <- c('15', '02','03','07','14','43','52', '72')
+all_fips <- covid %>% pull(state) %>% unique() %>% as.character(.)
+outside_fips <- c('15', '02','03','07','14','43','52', '72', NA)
 mainland_fips <- all_fips[!all_fips %in% outside_fips & !is.na(all_fips)]
 
 mainland_fips
 ```
 
 
-```{r fig.height = 9, fig.width = 12}
-plot_states <- function(fips_codes){
-  join_by_cols <-  c("long", "lat", "order", "hole", "piece", "id" = "geo_id", "state", "county", "fips")
+```{r plot_states, fig.height = 9, fig.width = 12}
+plot_states <- function(fips_codes, 
+                        limits.x = find_limits(x.outline)$sugg_long, 
+                        limits.y = find_limits(x.outline)$sugg_lat,
+                        title = '',
+                        setdate = today - 1,
+                        outlines = county_lines){
   
-  x <- covid %>%
-    filter(state %in% fips_codes,
-           date == max(date, na.rm = T)) %>%
-    full_join(county_lines[county_lines$state %in% fips_codes,],
-              by = join_by_cols)
   
-  ggplot(x, aes(long, lat, group = group)) +
-    geom_polygon(aes(fill = cases)) +
-    geom_path(color = '#aaaaaa', alpha = 0.3) +
+  # join_by_cols <-  c("long", "lat", "order", "hole", "piece", "id" = "geo_id", "state", "county", "fips")
+  
+  x.data <- covid %>% filter(state %in% fips_codes, date == setdate)
+
+  x.outline <- outlines %>% filter(state %in% fips_codes)
+  
+  ggplot(mapping = aes(long, lat, group = group)) +
+    
+    geom_path(color = '#bbbbbb',
+              # size = 0.5,
+              data = x.outline) +
+    
+    geom_polygon(aes(fill = cases),
+                 # color = 'gray50',
+                 data = x.data) +
+    
     scale_fill_gradient(low = '#ddbbff', high = '#e01a1a', 
-                        trans = 'log10', na.value = '#eeeeee') +
-    labs(title = 'Total Confirmed Coronavirus Cases by County',
-         subtitle = paste('Data from', format(x$date,'%B %d, %Y')),
+                        trans = 'log10', na.value = '#bbbbbb') +
+    
+    scale_x_continuous(limits = limits.x) +
+    scale_y_continuous(limits = limits.y) +
+    
+    labs(title = paste(title,'Total Confirmed Coronavirus Cases by County'),
+         subtitle = paste('Data from', format(x.data$date,'%B %d, %Y')),
          caption = 'Source: New York Times \n Data for some counties missing.',
          fill = 'Cases', fips = 'County') +
-    theme_void() +
-    theme(plot.margin = unit(rep(0.5,4), 'cm'))
+    
+    theme_minimal() +
+    coord_equal() +
+    theme(panel.grid = element_blank())
 }
 
-plot_states(mainland_fips)
-ggsave(filename = 'plots/20200403_us.png', width =  12, height = 9)
+# plot_states(mainland_fips, setdate = '2020-04-06', outline= state_lines)
+# ggsave(filename = 'plots/us/20200406_us.png', width = 12, height = 9)
 ```
+
+```{r animate_states, fig.height = 9, fig.width = 12}
+animate_states <- function(fips_codes, 
+                        limits.x = find_limits(x.outline)$sugg_long, 
+                        limits.y = find_limits(x.outline)$sugg_lat,
+                        title = '',
+                        outlines = county_lines){
+  
+  x.data <- covid %>% filter(state %in% fips_codes, !is.na(date))
+
+  x.outline <- outlines %>% filter(state %in% fips_codes)
+  
+  new_animation <- ggplot(mapping = aes(long, lat, group = group)) +
+    
+    geom_path(color = '#bbbbbb',
+              # size = 0.5,
+              data = x.outline) +
+    
+    geom_polygon(aes(fill = cases),
+                 # color = 'gray50',
+                 data = x.data) +
+    
+    scale_fill_gradient(low = '#ddbbff', high = '#e01a1a', 
+                        trans = 'log10', na.value = '#bbbbbb') +
+    
+    scale_x_continuous(limits = limits.x) +
+    scale_y_continuous(limits = limits.y) +
+    
+    labs(title = paste(title,'Total Confirmed Coronavirus Cases by County'),
+         subtitle = 'Date: {frame_time}',
+         caption = 'Source: New York Times \n Data for some counties missing.',
+         fill = 'Cases', fips = 'County') +
+    
+    theme_minimal() +
+    coord_equal() +
+    theme(panel.grid = element_blank()) +
+    transition_time(x.data$date)
+  
+  animate(new_animation, end_pause = 20, width = 8, height = 6, units = 'in', res = 144)
+}
+
+animate_states('15', title = 'Hawaii')
+anim_save(filename = 'plots/hawaii.gif')
+```
+
 
 ```{r hawaii}
-hi <- covid %>%
-  filter(state %in% c('15'), !is.na(date))
-
-hi_map_anim <- ggplot(hi %>% filter(date == max(date)), 
-                      aes(long, lat, group = group, fill = cases)) +
-  geom_polygon() +
-  geom_path(alpha = 0.3) +
-  scale_fill_gradient(low = '#ffeeee', high = '#f00000', 
-                      na.value = '#dddddd', trans = 'log10') +
-  # scale_y_continuous(limits = c(34.9, 36.7)) +
-  # scale_x_continuous(limits = c(-90.5, -81.5)) +
-  labs(title = 'Total Confirmed Coronavirus Cases by County in Hawaii',
-       subtitle = paste('Data from', max(hi$date)),
-       caption = 'Source: New York Times',
-       x = 'longitude', y = 'latitude',
-       fill = 'Cases', fips = 'County') +
-  coord_equal() +
-  theme_minimal() +
-  theme(legend.position = c(0.2, 0.4),
-        legend.box.background = element_rect(fill = '#ffffff', color = '#aaaaaa'))
-
-# animate(hi_map_anim, end_pause = 20, width = 7, height = 5, units = 'in', res = 72)
+plot_states('15', outlines = county_lines, setdate = '2020-04-06')
 
 # ggsave(filename = 'plots/20200403_hi.png', width = 7, height = 5)
-```
-
-
-
-```{r tennesee}
-
-tn <- covid %>%
-  filter(state %in% c('47'))
-
-tn_map_anim <- ggplot(tn, aes(long, lat, group = group, fill = cases)) +
-  geom_polygon() +
-  geom_path(alpha = 0.3) +
-  scale_fill_gradient(low = '#ffeeee', high = '#f00000', 
-                      na.value = '#dddddd', trans = 'log10') +
-  scale_y_continuous(limits = c(34.9, 36.7)) +
-  scale_x_continuous(limits = c(-90.5, -81.5)) +
-  labs(title = 'Total Confirmed Coronavirus Cases by County in Tennessee',
-       subtitle = paste('Data from April 3, 2020'),
-       caption = 'Source: New York Times \n Data for some counties missing.',
-       x = 'longitude', y = 'latitude',
-       fill = 'Cases', fips = 'County') +
-  coord_equal() +
-  theme_minimal()
-
-# animate(tn_map_anim, end_pause = 20, width = 7, height = 5, units = 'in', res = 72)
-
-ggsave(filename = 'plots/20200403_tn.png', width = 7, height = 5)
-
 ```
 
 ```{r}
@@ -261,22 +285,8 @@ anim_save(filename = 'plots/20200403_counties.gif', fig.height = 5, fig.width = 
 ```
 
 ```{r}
-corona %>% 
-  filter(fips %in% c('06037', '53033', '15003', '47037')) %>% 
-  ggplot(aes(date, cases, color = fips)) + 
-  geom_line(size = 1.1) +
-  scale_color_discrete(name = 'County',
-                       breaks = c('06037', '53033', '15003', '47037'),
-                       labels = c('Los Angeles County',
-                                  'King County (Seattle)',
-                                  'Honolulu County',
-                                  'Davidson County (Nashville)')) +
-  labs(title = 'Confirmed Coronavirus Cases',
-       subtitle = 'Data as of April 3',
-       caption = 'Source: New York Times') +
-  theme_minimal() +
-  theme(legend.position = c(0.2,0.5))
+ca_anim <- animate_states('06', title = 'California')
 
-ggsave(filename = 'plots/20200403_counties.png', height = 5, width = 7)
+anim_save('plots/ca.gif', height = 6, width = 8)
 ```
 
