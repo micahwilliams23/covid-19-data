@@ -14,7 +14,6 @@ library(gganimate)
 library(transformr)
 library(geojsonio)
 library(tidycensus)
-library(gridExtra)
 # census_api_key('f7c07c55451ec943fc1b438d589f8b068aeb43fc', install = T)
 ```
 
@@ -400,6 +399,7 @@ three_day %>%
 
 ggsave('plots/avg_change.png', width = 7, height = 5)
 
+# show states with most outlier counties
 three_day %>% 
   filter(date == '2020-04-06',
          sig_normalized > 0.97) %>%
@@ -407,8 +407,7 @@ three_day %>%
   arrange(desc(sig_normalized)) %>%
   group_by(state) %>%
   count() %>%
-  arrange(desc(n)) %>% 
-  paste()
+  arrange(desc(n))
 ```
 
 ```{r death_rate}

@@ -204,3 +204,61 @@ anim_state_cases <- function(fips_codes, title = ''){
 # anim_state_cases("15", "Hawaii")
 ```
 
+```{r top_ten}
+top_ten <- corona %>% filter(fips %in%  top_ten_fips, date >= '2020-03-07')
+
+top_ten_order <- top_ten %>% filter(date =='2020-04-07') %>% arrange(desc(cases)) %>% pull(county)
+
+top_ten$county <- factor(top_ten$county, top_ten_order, ordered = T)
+
+line_plot <- top_ten %>% 
+  ggplot(aes(date, cases, color = county)) +
+  geom_line(size = 1.2) +
+  labs(y = 'Total Confirmed Cases (thousands)', x = 'Date',
+       title = 'Confirmed Cases of Coronavirus, Top 10 Counties in US',
+       subtitle = 'Date: {frame_along}', color = 'County',
+       caption = 'Source: New York Times \n Created by Micah Williams') +
+  scale_color_brewer(type = 'qual', palette = 'Paired') +
+  theme_minimal() +
+  scale_y_continuous(breaks = seq(0,80000,20000), 
+                     labels = seq(0,80,20)) +
+    theme(legend.position = c(0.15, 0.55),
+          legend.background = element_rect(fill = '#ffffff90', color = '#ffffffa0')) +
+  transition_reveal(date)
+
+line_anim <- animate(line_plot, end_pause = 20, width = 7, height = 5, units = 'in', res = 144)
+```
+
+```{r infection_rate}
+three_day <- corona %>% filter(date >= '2020-04-03', cases > 8) %>%
+  group_by(fips) %>%
+  mutate(avg_new_infect_3day = mean(daily_infect_rate)) %>%
+  filter(date == '2020-04-06', avg_new_infect_3day >= 0) %>%
+  ungroup() %>% 
+  mutate(sig_score = avg_new_infect_3day*(log10(cases)),
+         sig_normalized = percent_rank(sig_score)) 
+
+three_day %>%
+  ggplot(aes(cases, avg_new_infect_3day)) +
+  geom_point(color = if_else(three_day$sig_normalized > 0.97, '#d01a1a', '#000000'),
+             alpha = if_else(three_day$sig_normalized > 0.97, 1, 0.3)) +
+  scale_x_log10(breaks = 1*10^c(1:4),
+                labels = c('10','100','1,000','10,000')) +
+  labs(x = ' Total Cases', y = 'Daily New Infection Rate',
+       title = 'Confirmed Cases vs. Average Daily Infection Rate',
+       subtitle = 'Infection rate calculated as average daily rate of change in infections from April 3-6',
+       caption = 'Source: New York Times\n Created by Micah Williams') +
+  theme_minimal()
+
+ggsave('plots/avg_change.png', width = 7, height = 5)
+
+# show states with most outlier counties
+three_day %>% 
+  filter(date == '2020-04-06',
+         sig_normalized > 0.97) %>%
+  select(-c(date, daily_infect_rate, state_code)) %>%
+  arrange(desc(sig_normalized)) %>%
+  group_by(state) %>%
+  count() %>%
+  arrange(desc(n))
+```
