@@ -20,8 +20,6 @@ library(tidycensus)
 ```
 
 ```{r import_data, message=FALSE, warning=FALSE}
-# set current date as variable
-today = Sys.Date()
 
 # import data from NYTimes csv
 corona <- read_csv('us-counties.csv', col_types = c('Dcccii')) %>%
@@ -98,8 +96,111 @@ get_state_fips <- function(state){
   state_fips[state] %>% pull() %>% as.character()
 }
 
-# remove variables from environment- this data has already been transformed and saved as other vars
-rm(census, census.points, states)
+# remove variables from environment- this data has already been transformed and is not required for functions
+rm(census, census.points, states, state_fips_df)
 ```
+
+```{r plot_states}
+
+# function takes fips code(s) of states and plots the result as a choropleth
+# title arg adds name of region to plot title
+# setdates selects date to plot... defaults to previous day for more recent data (hopefully)
+# outlines takes tbl of polygon boundaries to plot; defaults to counties
+
+plot_state_cases <- function(fips_codes, fill.var = "cases", title = '', setdate = Sys.Date() - 1){
+  
+  # filter data for specified fips codes and date
+  x.data <- covid %>% 
+    filter(state_code %in% fips_codes, date == setdate)
+
+  # filter outlines for relevant outlines
+  x.outline <- county_lines %>% 
+    filter(state %in% fips_codes) %>%
+    select(fips:group)
+  
+  # specify mapping for plot
+  ggplot(mapping = aes(long, lat, group = group)) +
+    
+    # set color and plot outlines from outlines data
+    geom_path(color = '#bbbbbb',
+              data = x.outline) +
+    
+    # plot counties, filled by cases from cases data
+    geom_polygon(aes(fill = cases),
+                 data = x.data) +
+    
+    # set scale: low is violet, high is red. set long scale with trans
+    scale_fill_gradient(low = '#ddbbff', high = '#e01a1a', 
+                        trans = 'log10', na.value = '#bbbbbb') +
+    
+    # add labels with generated date in subtitle, region name from title arg
+    labs(title = paste(title,'Total Confirmed Coronavirus Cases by County'),
+         subtitle = paste('Data from', format(as.Date(setdate), '%B %d, %Y')),
+         caption = 'Source: New York Times\nCreated by Micah Williams',
+         fill = 'Cases', fips = 'County') +
+    
+    # customize plot with theme (remove background, visually simple)
+    theme_minimal() +
+    
+    # equalize coordinate system for no map distortion
+    coord_equal() +
+    
+    # remove grid lines
+    theme(panel.grid = element_blank())
+}
+```
+
+```{r example_state_plot}
+plot_state_cases("06", title = "California", setdate = '2020-04-06')
+```
+
+```{r anim_state_cases}
+anim_state_cases <- function(fips_codes, title = ''){
+  
+  # filter covid date for specified states
+  x.data <- covid %>% filter(state %in% fips_codes, !is.na(date))
+
+  # filter county lines for specified states
+  x.outline <- county_lines %>% filter(state %in% fips_codes)
+  
+  # set mapping, save gganim object
+  new_animation <- ggplot(mapping = aes(long, lat, group = group)) +
+    
+    # draw outlines from outlines data
+    geom_path(color = '#bbbbbb',
+              data = x.outline) +
+    
+    # draw polygons, fill by number of cases
+    geom_polygon(aes(fill = cases),
+                 data = x.data) +
+    
+    # set fill scale to same as static graphs, logarithmic
+    scale_fill_gradient(low = '#ddbbff', high = '#e01a1a', 
+                        trans = 'log10', na.value = '#bbbbbb') +
+    
+    # add labels, title to plot
+    labs(title = paste(title,'Total Confirmed Coronavirus Cases by County'),
+         
+         # variable from transition: shows date of frame
+         subtitle = 'Date: {frame_time}',
+         caption = 'Source: New York Times \n Created by Micah Williams',
+         fill = 'Cases', fips = 'County') +
+    
+    # add theme, equalize coordinates, remove grid lines
+    theme_void() +
+    coord_equal() +
+    theme(panel.grid = element_blank()) +
+    
+    # add transition from gganimate
+    transition_time(x.data$date)
+  
+  # animate object with 20 frame pause at end
+  animate(new_animation, end_pause = 20, width = 8, height = 5, units = 'in', res = 144)
+}
+```
+
+```{r example_anim}
+# animation takes time to render, commented out for ease of knitting
+# anim_state_cases("15", "Hawaii")
 ```
 
