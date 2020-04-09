@@ -1,0 +1,105 @@
+---
+title: "Visualizing COVID-19"
+author: "Micah Williams"
+date: "4/8/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F)
+
+
+# import required packages
+library(tidyverse)
+library(janitor)
+library(gganimate)
+library(transformr)
+
+# requires census API key
+library(tidycensus)
+```
+
+```{r import_data, message=FALSE, warning=FALSE}
+# set current date as variable
+today = Sys.Date()
+
+# import data from NYTimes csv
+corona <- read_csv('us-counties.csv', col_types = c('Dcccii')) %>%
+  
+  # fix fips for New York City
+  mutate(fips = if_else(county == 'New York City', "36061", fips)) %>% 
+  
+  # add new infection rate column, map_if to prevent error on most recent date
+  group_by(fips) %>%
+  arrange(date) %>%
+  mutate(daily_infect_rate = map_if(date, 
+                              ~length(cases[date == .+1]) == 1, 
+                              ~(cases[date == .+1] - cases[date == .]) / cases[date == .], 
+                              .else = NA_real_),
+         
+         # extract state code from fips with regex (pattern is first two digits)
+         state_code = map_chr(fips, ~str_extract(., '\\d{2}'))) %>%
+  unnest(daily_infect_rate)
+
+# import census shapefiles for county geometry
+census <- rgdal::readOGR(dsn = './gz_2010_us_050_00_5m','gz_2010_us_050_00_5m')
+
+# convert spatial polygons to latitude/longitude
+census.points <- fortify(census, region = 'GEO_ID')
+
+# join census data with coronavirus data
+census@data <- census@data %>%
+  mutate(fips = paste(STATE,COUNTY,sep=''))%>%
+  full_join(corona, by = c('fips', 'NAME' = 'county')) %>%
+  clean_names()
+
+# combine joined data with converted county polygons for cases and shapes
+covid <- census.points %>%
+  full_join(census@data, by = c('id' = 'geo_id')) %>%
+  mutate(cases = if_else(cases %in% c(0, NA), NA_integer_, cases))
+  
+# import spatial polygons for US states
+states <- geojsonio::geojson_read(x = "https://raw.githubusercontent.com/PublicaMundi/MappingAPI/master/data/geojson/us-states.json", 
+                 what = "sp")
+
+# repair geometry... intersecting points
+# (code from https://stackoverflow.com/questions/46003060/error-using-region-argument-when-fortifying-shapefile)
+states <- rgeos::gBuffer(states, byid = T, width = 0)
+
+# convert spatial polygons to latitude/longitude for plotting
+state_lines <- fortify(states, region = 'id') %>%
+  select(state = id, everything())
+
+# save county lines for choropleths
+county_lines <- census@data %>%
+  select(c(geo_id:county,fips)) %>%
+  full_join(census.points,  by = c('geo_id' = 'id')) %>%
+  filter(!is.na(long), !is.na(lat))
+
+# pull state fips from census data
+state_fips_df <- census@data %>% 
+  select(c(state, state_2)) %>% 
+  unique() %>% 
+  filter(!is.na(state), !is.na(state_2)) %>% 
+  arrange(state)
+
+# transpose matrix from columns of states and codes to rows of states and codes
+state_fips <- state_fips_df %>%
+  select(code = state) %>%
+  mutate(code = as.character(code)) %>%
+  t() %>%
+  data.frame()
+
+# set column names to cleaned state names ex: Texas -> texas, New Hampshire -> new_hampshire
+colnames(state_fips) <- make_clean_names(state_fips_df$state_2)
+
+# define function to get fips code from state name
+get_state_fips <- function(state){
+  state_fips[state] %>% pull() %>% as.character()
+}
+
+# remove variables from environment- this data has already been transformed and saved as other vars
+rm(census, census.points, states)
+```
+```
+
