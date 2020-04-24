@@ -8,113 +8,135 @@ output: html_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = F)
 
-
 # import required packages
 library(tidyverse)
 library(janitor)
 library(gganimate)
 library(transformr)
+library(ggrepel)
+library(leaflet)
+library(maptools)
 
 # requires census API key
 library(tidycensus)
 ```
 
-```{r import_data, message=FALSE, warning=FALSE}
+```{r import_county, message=FALSE, warning=FALSE}
+county_geom <- rgdal::readOGR(dsn = './data/gz_2010_us_050_00_5m','gz_2010_us_050_00_5m')
 
-# import data from NYTimes csv
-corona <- read_csv('us-counties.csv', col_types = c('Dcccii')) %>%
-  
-  # fix fips for New York City
+county_data <- read_csv('data/us-counties.csv', col_types = c('Dcccii')) %>%
   mutate(fips = if_else(county == 'New York City', "36061", fips)) %>% 
-  
-  # add new infection rate column, map_if to prevent error on most recent date
   group_by(fips) %>%
   arrange(date) %>%
   mutate(daily_infect_rate = map_if(date, 
                               ~length(cases[date == .+1]) == 1, 
                               ~(cases[date == .+1] - cases[date == .]) / cases[date == .], 
-                              .else = NaN),
-         
-         # extract state code from fips with regex (pattern is first two digits)
+                              .else = NA_real_),
          state_code = map_chr(fips, ~str_extract(., '\\d{2}'))) %>%
-  
-  # replace NA so that newest data is not lost
-  mutate(daily_infect_rate = replace_na(daily_infect_rate, list(NA_real_))) %>%
-  unnest(daily_infect_rate) %>%
-  ungroup()
+  unnest(daily_infect_rate)
 
-# import census shapefiles for county geometry
-census <- rgdal::readOGR(dsn = './gz_2010_us_050_00_5m','gz_2010_us_050_00_5m')
+# below code heavily sampled from https://www.r-bloggers.com/moving-the-earth-well-alaska-hawaii-with-r/
 
-# convert spatial polygons to latitude/longitude
-census.points <- fortify(census, region = 'GEO_ID')
+hawaii <- county_geom[county_geom$STATE == '15',]
+# hawaii <- elide(hawaii, rotate=15)
+hawaii <- elide(hawaii, scale=max(apply(bbox(hawaii), 1, diff)) * 1.6)
+hawaii <- elide(hawaii, shift=c(-111, 24))
+hawaii@proj4string <- county_geom@proj4string
 
-# join census data with coronavirus data
-census@data <- census@data %>%
+alaska <- county_geom[county_geom$STATE == '02',]
+alaska <- alaska %>%
+  elide(scale = max(apply(bbox(.), 1, diff)) / 3.4) %>%
+  elide(rotate = 5) %>%
+  elide(shift = c(-128, 24.5))
+alaska@proj4string <- county_geom@proj4string
+
+county_geom <- rbind(county_geom[!county_geom$STATE %in% c('15','02'),],
+                    hawaii, alaska)
+
+county_coords <- fortify(county_geom, region = 'GEO_ID')
+
+county_geom@data <- county_geom@data %>%
   mutate(fips = paste(STATE,COUNTY,sep=''))%>%
-  full_join(corona, by = c('fips', 'NAME' = 'county')) %>%
+  full_join(county_data, by = c('fips', 'NAME' = 'county')) %>%
   clean_names()
 
-# combine joined data with converted county polygons for cases and shapes
-covid <- census.points %>%
-  full_join(census@data, by = c('id' = 'geo_id')) %>%
+county <- county_coords %>%
+  full_join(county_geom@data, by = c('id' = 'geo_id')) %>%
   mutate(cases = if_else(cases %in% c(0, NA), NA_integer_, cases))
   
-# import spatial polygons for US states
-states <- geojsonio::geojson_read(x = "https://raw.githubusercontent.com/PublicaMundi/MappingAPI/master/data/geojson/us-states.json", 
+county_lines <- county_geom@data %>%
+  select(c(geo_id:county,fips)) %>%
+  full_join(county_coords,  by = c('geo_id' = 'id')) %>%
+  filter(!is.na(long), !is.na(lat))
+
+rm(county_geom, county_coords)
+```
+
+```{r import_states, message=FALSE, warning=FALSE}
+state_geom <- geojsonio::geojson_read(x = "https://raw.githubusercontent.com/PublicaMundi/MappingAPI/master/data/geojson/us-states.json",
                  what = "sp")
+
+state_data <- read_csv('data/us-states.csv')
 
 # repair geometry... intersecting points
 # (code from https://stackoverflow.com/questions/46003060/error-using-region-argument-when-fortifying-shapefile)
-states <- rgeos::gBuffer(states, byid = T, width = 0)
+state_geom <- rgeos::gBuffer(state_geom, byid = T, width = 0)
 
-# convert spatial polygons to latitude/longitude for plotting
-state_lines <- fortify(states, region = 'id') %>%
-  select(state = id, everything())
+# below code heavily sampled from https://www.r-bloggers.com/moving-the-earth-well-alaska-hawaii-with-r/
 
-# save county lines for choropleths
-county_lines <- census@data %>%
-  select(c(geo_id:county,fips)) %>%
-  full_join(census.points,  by = c('geo_id' = 'id')) %>%
-  filter(!is.na(long), !is.na(lat))
+hawaii <- state_geom[state_geom$id == '15',]
+# hawaii <- elide(hawaii, rotate=15)
+hawaii <- elide(hawaii, scale=max(apply(bbox(hawaii), 1, diff)) * 1.6)
+hawaii <- elide(hawaii, shift=c(-111, 24))
+hawaii@proj4string <- state_geom@proj4string
 
-# pull state fips from census data
-state_fips_df <- census@data %>% 
-  select(c(state, state_2)) %>% 
+alaska <- state_geom[state_geom$id == '02',]
+alaska <- alaska %>%
+  elide(scale = max(apply(bbox(.), 1, diff)) / 3.4) %>%
+  elide(rotate = 5) %>%
+  elide(shift = c(-128, 24.5))
+alaska@proj4string <- state_geom@proj4string
+
+state_geom <- rbind(state_geom[!state_geom$id %in% c('15','02'),],
+                    hawaii, alaska)
+
+state_coords <- fortify(state_geom, region = 'id') %>%
+  mutate(state = id) %>% select(-id)
+
+state <- state_data %>%
+  full_join(state_coords, by = c('fips' = 'state'))
+
+state_fips_df <- state %>% 
+  select(c(state, fips)) %>% 
   unique() %>% 
-  filter(!is.na(state), !is.na(state_2)) %>% 
+  filter(!is.na(state), 
+         !is.na(fips),
+         !fips %in% c('69','72','78','66','60')) %>% 
   arrange(state)
 
-# transpose matrix from columns of states and codes to rows of states and codes
 state_fips <- state_fips_df %>%
-  select(code = state) %>%
-  mutate(code = as.character(code)) %>%
-  t() %>%
   data.frame()
 
-# set column names to cleaned state names ex: Texas -> texas, New Hampshire -> new_hampshire
-colnames(state_fips) <- make_clean_names(state_fips_df$state_2)
-
-# define function to get fips code from state name
-get_state_fips <- function(state){
-  state_fips[state] %>% pull() %>% as.character()
+get_state_fips <- function(test.terms){
+  state_fips %>%
+    filter(state %in% test.terms |
+             fips %in% test.terms)
 }
 
-# remove variables from environment- this data has already been transformed and is not required for functions
-rm(census, census.points, states, state_fips_df)
+rm(state_geom)
 ```
 
-```{r plot_states}
+```{r plot_county_cases}
 
 # function takes fips code(s) of states and plots the result as a choropleth
 # title arg adds name of region to plot title
 # setdates selects date to plot... defaults to previous day for more recent data (hopefully)
 # outlines takes tbl of polygon boundaries to plot; defaults to counties
 
-plot_state_cases <- function(fips_codes, fill.var = "cases", title = '', setdate = Sys.Date() - 1){
+plot_county_cases <- function(fips_codes, fill.var = "cases", title = '', setdate = Sys.Date() - 1){
   
   # filter data for specified fips codes and date
-  x.data <- covid %>% 
+  x.data <- county %>% 
     filter(state_code %in% fips_codes, date == setdate)
 
   # filter outlines for relevant outlines
@@ -144,10 +166,10 @@ plot_state_cases <- function(fips_codes, fill.var = "cases", title = '', setdate
          fill = 'Cases', fips = 'County') +
     
     # customize plot with theme (remove background, visually simple)
-    theme_minimal() +
+    theme_void() +
     
     # equalize coordinate system for no map distortion
-    coord_equal() +
+    coord_map("albers", 30,50) +
     
     # remove grid lines
     theme(panel.grid = element_blank())
@@ -155,53 +177,9 @@ plot_state_cases <- function(fips_codes, fill.var = "cases", title = '', setdate
 ```
 
 ```{r example_state_plot}
-plot_state_cases("06", title = "California", setdate = '2020-04-06')
-```
+mainland_fips <- state_fips %>% pull(fips)
 
-```{r anim_state_cases}
-anim_state_cases <- function(fips_codes, title = ''){
-  
-  # filter covid date for specified states
-  x.data <- covid %>% filter(state %in% fips_codes, !is.na(date))
-
-  # filter county lines for specified states
-  x.outline <- county_lines %>% filter(state %in% fips_codes)
-  
-  # set mapping, save gganim object
-  # new_animation <- 
-  ggplot(mapping = aes(long, lat, group = group)) +
-    
-    # draw outlines from outlines data
-    geom_path(color = '#bbbbbb',
-              data = x.outline) +
-    
-    # draw polygons, fill by number of cases
-    geom_polygon(aes(fill = cases),
-                 data = x.data) +
-    
-    # set fill scale to same as static graphs, logarithmic
-    scale_fill_gradient(low = '#ddbbff', high = '#e01a1a', 
-                        trans = 'log10', na.value = '#bbbbbb') +
-    
-    # add labels, title to plot
-    labs(title = paste(title,'Total Confirmed Coronavirus Cases by County'),
-         
-         # variable from transition: shows date of frame
-         subtitle = 'Date: {frame_time}',
-         caption = 'Source: New York Times \n Created by Micah Williams',
-         fill = 'Cases', fips = 'County') +
-    
-    # add theme, equalize coordinates, remove grid lines
-    theme_void() +
-    coord_equal() +
-    theme(panel.grid = element_blank()) +
-    
-    # add transition from gganimate
-    transition_time(x.data$date)
-  
-  # animate object with 20 frame pause at end
-  # animate(new_animation, end_pause = 20, width = 8, height = 5, units = 'in', res = 144)
-}
+plot_county_cases(mainland_fips, title = "Idaho", setdate = '2020-04-20')
 ```
 
 ```{r example_anim}
@@ -210,33 +188,30 @@ anim_state_cases <- function(fips_codes, title = ''){
 ```
 
 ```{r top_ten}
-top_ten <- corona %>% 
-  filter(date == '2020-04-08', cases != 0) %>% 
-  mutate(death_rate = deaths / cases,
-         death.percentile = percent_rank(death_rate)) %>%
-  filter(death.percentile > 0.8, deaths > 15) %>%
-  arrange(desc(death.percentile)) %>%
+top_ten_today <- corona %>% 
+  filter(date == '2020-04-14', cases != 0) %>% 
+  # mutate(death_rate = deaths / cases,
+  #        death.percentile = percent_rank(death_rate)) %>%
+  # filter(death.percentile > 0.8, deaths > 15) %>%
+  arrange(desc(cases)) %>%
   slice(1:10)
 
-paste(top_ten$county,', ',top_ten$state,' (',round(top_ten$death_rate,3),', ',top_ten$deaths,' deaths)',sep='')
-
-top_ten_fips <- top_ten %>% pull(fips)
+top_ten_fips <- top_ten_today %>% pull(fips)
 
 top_ten <- corona %>% filter(fips %in%  top_ten_fips, date >= '2020-03-07')
 
-top_ten_order <- top_ten %>% filter(date == '2020-04-07') %>% arrange(desc(cases)) %>% pull(county)
+top_ten_order <- top_ten_today %>% pull(county)
 
-top_ten$county <- as.character(factor(top_ten$county, top_ten_order, ordered = T))
+top_ten$county <- factor(top_ten$county, levels = top_ten_order, ordered = T)
 
 line_plot <- top_ten %>% 
   ggplot(aes(date, cases, color = county)) +
   geom_line(size = 1.2) +
+  scale_color_brewer(type = 'qual', palette = 'Paired') +
   labs(y = 'Total Confirmed Cases (thousands)', x = 'Date',
        title = 'Confirmed Cases of Coronavirus, Top 10 Counties in US',
        subtitle = 'Date: {frame_along}', color = 'County',
        caption = 'Source: New York Times \n Created by Micah Williams') +
-  scale_color_brewer(type = 'qual', palette = 'Paired', 
-                     labels = paste(top_ten$county, ', ', top_ten$state, sep = '')) +
   theme_minimal() +
   scale_y_continuous(breaks = seq(0,80000,20000), 
                      labels = seq(0,80,20)) +
@@ -246,13 +221,17 @@ line_plot <- top_ten %>%
 
 line_anim <- animate(line_plot, end_pause = 20, width = 7, height = 5, units = 'in', res = 144)
 line_anim
+
+# print top ten counties and cases
+paste(top_ten_today$county,', ',top_ten_today$state,
+' [',prettyNum(top_ten_today$cases, big.mark = ','),']',sep='')
 ```
 
 ```{r infection_rate}
-three_day <- corona %>% filter(date >= '2020-04-04', cases > 8) %>%
+three_day <- corona %>% filter(date >= '2020-04-10', cases > 8) %>%
   group_by(fips) %>%
-  mutate(avg_new_infect_3day = mean(daily_infect_rate)) %>%
-  filter(date == '2020-04-07', avg_new_infect_3day >= 0) %>%
+  mutate(avg_new_infect_3day = mean(daily_infect_rate, na.rm = T)) %>%
+  filter(date == '2020-04-13', avg_new_infect_3day >= 0) %>%
   ungroup() %>% 
   mutate(sig_score = avg_new_infect_3day*(log10(cases)),
          sig_normalized = percent_rank(sig_score)) 
@@ -263,10 +242,11 @@ top_5 <- three_day %>%
   filter(rownum <= 5)
 
 outbreaks <- three_day %>% 
-  filter(sig_normalized > 0.97, cases > 1000) %>%
-  .[c(4,1,2,3,8,5,7,6),] %>%
-  mutate(text.y = seq(0.4, 0.15, length.out = 8),
-         text.x = 1000 * 10^seq(0,1,length.out = 8))
+  filter(sig_normalized > 0.97, cases > 500) %>%
+  .[c(3,7,6,5,8,1,2,4),] %>%
+  mutate(text.y = seq(0.5, 0.15, length.out = 8),
+         text.x = 750 * 10^seq(0,1,length.out = 8),
+         rownum = row_number())
 
 three_day %>%
   ggplot(aes(cases, avg_new_infect_3day)) +
@@ -276,7 +256,7 @@ three_day %>%
              alpha = if_else(three_day$sig_normalized > 0.97,
                              1, 0.3)) +
   
-  geom_segment(color = 'black',
+  geom_segment(color = 'gray50',
            aes(xend = cases, x = text.x * 0.95,
            yend = avg_new_infect_3day, y = text.y),
            data = outbreaks) +
@@ -284,25 +264,32 @@ three_day %>%
   geom_point(color = '#333333', data = top_5, pch = 1, size = 3) +
   geom_point(color = '#333333', data = outbreaks, pch = 1, size = 3) +
   
-  geom_text(aes(label = paste(county, ', ', state, sep = ''),
-                x = cases * 1.15, y = avg_new_infect_3day), 
-            hjust = 0, vjust = 0.5, size = 3,
-            data = top_5) +
+  ggrepel::geom_text_repel(aes(cases, avg_new_infect_3day, 
+                               label = paste(county, ', ', state, sep = '')),
+                           size = 3, hjust = 0,
+                           segment.size = 0.2,
+                           nudge_y = 0.05,
+                           data = top_5) +
   
+  # geom_text(aes(label = paste(county, ', ', state, sep = ''),
+  #               x = cases * 1.15, y = avg_new_infect_3day), 
+  #           hjust = 0, vjust = 0.5, size = 3,
+  #           data = top_5) +
+  # 
   geom_text(aes(label = paste(county, ', ', state, sep = ''),
-                x = text.x, y = text.y), 
-            hjust = 0, vjust = 0.5, size = 3,
+                x = text.x, y = text.y),
+  hjust = 0, vjust = 0.5, size = 3,
             data = outbreaks) +
   
   scale_x_log10(breaks = 1*10^c(1:4),
                 labels = c('10','100','1,000','10,000')) +
   
-  scale_y_continuous(breaks = seq(0,0.6,0.2),
-    labels = paste(seq(0, 60, length.out = 4), '%', sep = '')) +
+  scale_y_continuous(breaks = seq(0,1,0.2),
+    labels = paste(seq(0, 100, length.out = 6), '%', sep = '')) +
   
   labs(x = ' Total Cases', y = 'Daily Percent Change in Infections',
        title = 'Confirmed Cases vs. Average Daily Infection Rate',
-       subtitle = 'Infection rate calculated as average daily percent change in infections from April 4-7',
+       subtitle = 'Infection rate calculated as average daily percent change in infections from April 10-13',
        caption = 'Source: New York Times\n Created by Micah Williams') +
   theme_minimal()
 
@@ -310,19 +297,20 @@ ggsave('plots/avg_change.png', width = 7, height = 5)
 
 # show states with most outlier counties
 three_day %>% 
-  filter(date == '2020-04-07',
+  filter(date == '2020-04-13',
          sig_normalized > 0.97) %>%
   # select(-c(date, daily_infect_rate, state_code)) %>%
   arrange(desc(sig_normalized)) %>%
   group_by(state) %>%
   count() %>%
+  ungroup() %>%
+  # mutate(prop = round(n / sum(n),3)) %>%
   arrange(desc(n))
 ```
 
-```{r pennsyvania}
-fips_codes = '42'
-title = 'Pennsylvania'
-
+```{r anim_state_cases}
+anim_state_cases <- function(fips_codes, title = ''){
+  
 # filter covid date for specified states
   x.data <- covid %>% filter(state %in% fips_codes, !is.na(date))
 
@@ -330,13 +318,15 @@ title = 'Pennsylvania'
   x.outline <- county_lines %>% filter(state %in% fips_codes)
   
   # set mapping, save gganim object
-  # new_animation <- 
-  ggplot(mapping = aes(long, lat, group = group)) +
+  new_animation <- ggplot(mapping = aes(long, lat, group = group)) +
     
     # draw outlines from outlines data
     geom_path(color = '#bbbbbb',
               data = x.outline) +
     
+    # add transition from gganimate
+    transition_time(x.data$date) +
+  
     # draw polygons, fill by number of cases
     geom_polygon(aes(fill = cases),
                  data = x.data) +
@@ -356,16 +346,19 @@ title = 'Pennsylvania'
     # add theme, equalize coordinates, remove grid lines
     theme_void() +
     coord_equal() +
-    theme(panel.grid = element_blank()) +
-    
-    # add transition from gganimate
-    transition_time(x.data$date)
+    theme(panel.grid = element_blank())
+  
+  # animate object with 20 frame pause at end
+  animate(new_animation, end_pause = 20, width = 8, height = 5, units = 'in', res = 144)
+}    
+# anim_state_cases('42', title = 'Pennsylvania')
+# anim_save('plots/PA.gif')
 ```
 
 ```{r county_coords}
 county_centers <- county_lines %>%
   group_by(fips) %>%
-  filter(!state %in% c('15','02', '43')) %>%
+  filter(state != '43') %>%
   mutate(x = mean(range(long)),
          y = mean(range(lat))) %>%
   select(fips, long = x, lat = y) %>%
@@ -375,16 +368,16 @@ county_centers <- county_lines %>%
 mainland_lines <- state_lines %>% filter(!state %in% c('02','15','72'))
 ```
 
-
 ```{r us_points, fig.height=5, fig.width=7}
-point_anim <- corona %>%
-  # filter(date == '2020-04-07', ) %>%
+# point_anim <-
+  corona %>%
+  filter(date == '2020-04-13', !is.na(cases)) %>%
   left_join(county_centers, by = 'fips') %>%
   ggplot(aes(long, lat)) +
   geom_polygon(aes(group = group),
             color = '#555555', fill = '#dddddd5d',
             size = 0.7, data = mainland_lines) +
-  geom_point(color = '#701a1a', fill = '#701a1a4d', aes(size = deaths), pch = 21) +
+  geom_point(color = '#a01a1a', fill = '#a01a1a4d', aes(size = cases), pch = 21) +
   
   # scale_color_gradient(low = '#ddbbff', high = '#e01a1a',
   #                       trans = 'log10', na.value = '#bbbbbb') +
@@ -394,18 +387,114 @@ point_anim <- corona %>%
   scale_size_continuous(range = c(1,20)) +
   theme_minimal() +
   theme(legend.position = 'none') +
-  transition_time(date) +
-  labs(title = 'Total Number of Deaths per County',
+  # transition_time(date) +
+  labs(title = 'Total Number of Confirmed Cases per County',
        subtitle = 'Date: {frame_time}',
-       caption = 'Source: New York Times\nCreated by Micah Williams')
+       caption = 'Source: New York Times\nCreated by Micah Williams') +
+  coord_map()
   
-animate(point_anim, 
-        end_pause = 20, 
-        nframes = 78, fps = 7,
-        height = 5, width = 7, 
-        units = 'in', res = 144)
+# animate(point_anim, 
+#         end_pause = 20, 
+#         nframes = 78, fps = 7,
+#         height = 5, width = 7, 
+#         units = 'in', res = 144)
 
-anim_save('plots/us_points.gif')
+# anim_save('plots/us_points.gif')
 
 ```
+
+```{r infect_rate_anim}
+infect <- corona %>% filter(!is.na(date), cases > 10) %>%
+  group_by(fips) %>%
+  mutate(day = as.integer(date - min(date) + 1),
+         day_group = ceiling(day/3)) %>%
+  group_by(fips, day_group) %>%
+  mutate(avg_rate = mean(daily_infect_rate)) %>%
+  ungroup() %>% 
+  mutate(sig_score = avg_rate * (log10(cases)),
+         sig_normalized = percent_rank(sig_score))
+
+infect %>%
+  filter(state_code == '15') %>%
+  ggplot(aes(day, avg_rate, color = fips)) +
+  geom_step(direction = 'hv')
+
+```
+
+```{r leaflet}
+cases_today <- corona %>% 
+  filter(date == max(date)) %>% 
+  select(fips, cases) %>%
+  inner_join(county_centers, by = 'fips') %>%
+  mutate(radius = log10(cases) * 10000)
+
+ct <- covid %>% filter(date == '2020-04-22')
+
+leaflet() %>%
+  addProviderTiles(provider = "CartoDB") %>%
+  setView(lat = 39.8333333, lng = -98.585522, zoom = 4) %>%
+  addPolygons(lng = ct$long, lat = ct$lat, group = ct$group,
+              color = 'white', fillColor = '#444444')
+  
+  # addCircles(lng = cases_today$long, lat = cases_today$lat,
+  #            radius = cases_today$radius,
+  #            fillOpacity = 0.05,
+  #            fillColor = '#e01a1a',
+  #            color = '#e01a1a',
+  #            weight = 1)
+```
+
+```{r plot_state_cases}
+
+# function takes fips code(s) of states and plots the result as a choropleth
+# title arg adds name of region to plot title
+# setdates selects date to plot... defaults to previous day for more recent data (hopefully)
+# outlines takes tbl of polygon boundaries to plot; defaults to counties
+
+plot_state_cases <- function(fips_codes, fill.var = "cases", title = '', setdate = Sys.Date() - 1){
+  
+  # filter data for specified fips codes and date
+  x.data <- state %>% 
+    filter(fips %in% fips_codes, date == setdate)
+
+  # filter outlines for relevant outlines
+  # x.outline <- county_lines %>% 
+  #   filter(state %in% fips_codes) %>%
+  #   select(fips:group)
+  
+  # specify mapping for plot
+  ggplot(mapping = aes(long, lat, group = group)) +
+    
+    # # set color and plot outlines from outlines data
+    # geom_path(color = '#bbbbbb',
+    #           data = x.outline) +
+    
+    # plot counties, filled by cases from cases data
+    geom_polygon(aes(fill = cases),
+                 color = '#dddddd',
+                 data = x.data) +
+    
+    # set scale: low is violet, high is red. set long scale with trans
+    scale_fill_gradient(low = '#ddbbff', high = '#e01a1a', 
+                        trans = 'log10', na.value = '#bbbbbb') +
+    
+    # add labels with generated date in subtitle, region name from title arg
+    labs(title = paste(title,'Total Confirmed Coronavirus Cases by State'),
+         subtitle = paste('Data from', format(as.Date(setdate), '%B %d, %Y')),
+         caption = 'Source: New York Times\nCreated by Micah Williams',
+         fill = 'Cases', fips = 'County') +
+    
+    # customize plot with theme (remove background, visually simple)
+    theme_void() +
+    
+    # equalize coordinate system for no map distortion
+    coord_map("albers", 30,50) +
+    
+    # remove grid lines
+    theme(panel.grid = element_blank())
+}
+
+plot_state_cases(mainland_fips, title = 'United States')
+```
+
 

@@ -15,18 +15,6 @@ library(transformr)
 library(geojsonio)
 library(tidycensus)
 # census_api_key('f7c07c55451ec943fc1b438d589f8b068aeb43fc', install = T)
-```
-
-```{r import_data, message=FALSE, warning=FALSE}
-today = Sys.Date()
-
-date_num <- function(date){
-  str_replace_all(as.character(date), '-', '')
-}
-
-w_filename <- function(name, path = 'plots/', filetype = 'png'){
-  paste(path, date_num(Sys.Date()), '_', name, '.', filetype, sep = '')
-}
 
 get_cases <- function(tbl, cur_date){
   tbl %>%
@@ -35,8 +23,11 @@ get_cases <- function(tbl, cur_date){
     sum()
 }
 
-census <- rgdal::readOGR(dsn = './gz_2010_us_050_00_5m','gz_2010_us_050_00_5m')
-corona <- read_csv('us-counties.csv', col_types = c('Dcccii')) %>%
+```
+
+```{r import_county, message=FALSE, warning=FALSE}
+county_geom <- rgdal::readOGR(dsn = './data/gz_2010_us_050_00_5m','gz_2010_us_050_00_5m')
+county_data <- read_csv('data/us-counties.csv', col_types = c('Dcccii')) %>%
   mutate(fips = if_else(county == 'New York City', "36061", fips)) %>% 
   group_by(fips) %>%
   arrange(date) %>%
@@ -47,33 +38,43 @@ corona <- read_csv('us-counties.csv', col_types = c('Dcccii')) %>%
          state_code = map_chr(fips, ~str_extract(., '\\d{2}'))) %>%
   unnest(daily_infect_rate)
 
-census.points <- fortify(census, region = 'GEO_ID')
+county_coords <- fortify(county_geom, region = 'GEO_ID')
 
-census@data <- census@data %>%
+county_geom@data <- county_geom@data %>%
   mutate(fips = paste(STATE,COUNTY,sep=''))%>%
-  full_join(corona, by = c('fips', 'NAME' = 'county')) %>%
+  full_join(county_data, by = c('fips', 'NAME' = 'county')) %>%
   clean_names()
 
-covid <- census.points %>%
-  full_join(census@data, by = c('id' = 'geo_id')) %>%
+county <- county_coords %>%
+  full_join(county_geom@data, by = c('id' = 'geo_id')) %>%
   mutate(cases = if_else(cases %in% c(0, NA), NA_integer_, cases))
   
-states <- geojson_read(x = "https://raw.githubusercontent.com/PublicaMundi/MappingAPI/master/data/geojson/us-states.json", 
+county_lines <- county_geom@data %>%
+  select(c(geo_id:county,fips)) %>%
+  full_join(county_coords,  by = c('geo_id' = 'id')) %>%
+  filter(!is.na(long), !is.na(lat))
+
+rm(county_geom, county_coords)
+```
+
+
+```{r import_states, message=FALSE, warning=FALSE}
+state_geom <- geojson_read(x = "https://raw.githubusercontent.com/PublicaMundi/MappingAPI/master/data/geojson/us-states.json", 
                  what = "sp")
+
+state_data <- read_csv('data/us-states.csv')
 
 # repair geometry... intersecting points
 # (code from https://stackoverflow.com/questions/46003060/error-using-region-argument-when-fortifying-shapefile)
-states <- rgeos::gBuffer(states, byid = T, width = 0)
+state_geom <- rgeos::gBuffer(state_geom, byid = T, width = 0)
 
-state_lines <- fortify(states, region = 'id') %>%
+state_coords <- fortify(state_geom, region = 'id') %>%
   mutate(state = id) %>% select(-id)
 
-county_lines <- census@data %>%
-  select(c(geo_id:county,fips)) %>%
-  full_join(census.points,  by = c('geo_id' = 'id')) %>%
-  filter(!is.na(long), !is.na(lat))
+state <- state_data %>%
+  full_join(state_coords, by = c('fips' = 'state'))
 
-state_fips_df <- census@data %>% 
+state_fips_df <- county_geom@data %>% 
   select(c(state, state_2)) %>% 
   unique() %>% 
   filter(!is.na(state), !is.na(state_2)) %>% 
@@ -91,11 +92,11 @@ get_state_fips <- function(state){
   state_fips[state] %>% pull() %>% as.character()
 }
 
-rm(census, census.points, states)
+rm(state_geom)
 ```
 
 ```{r}
-all_fips <- covid %>% pull(state) %>% unique() %>% as.character(.)
+all_fips <- county %>% pull(state) %>% unique() %>% as.character(.)
 outside_fips <- c('15', '02','03','07','14','43','52', '72', NA)
 mainland_fips <- all_fips[!all_fips %in% outside_fips & !is.na(all_fips)]
 
@@ -152,7 +153,7 @@ plot_states <- function(fips_codes,
 animate_states <- function(fips_codes, 
                         title = '',
                         outlines = county_lines){
-  
+
   x.data <- covid %>% filter(state %in% fips_codes, !is.na(date))
 
   x.outline <- outlines %>% filter(state %in% fips_codes)
@@ -183,7 +184,7 @@ animate_states <- function(fips_codes,
   animate(new_animation, end_pause = 20, width = 8, height = 5, units = 'in', res = 144)
 }
 
-animate_states('15', title = 'Hawaii')
+animate_states('42', title = 'Pennsylvania')
 anim_save(filename = 'plots/hawaii.gif')
 ```
 
@@ -383,7 +384,9 @@ three_day <- corona %>% filter(date >= '2020-04-03', cases > 8) %>%
   filter(date == '2020-04-06', avg_new_infect_3day >= 0) %>%
   ungroup() %>% 
   mutate(sig_score = avg_new_infect_3day*(log10(cases)),
-         sig_normalized = percent_rank(sig_score)) 
+         sig_normalized = percent_rank(sig_score))
+
+big_growth
 
 three_day %>%
   ggplot(aes(cases, avg_new_infect_3day)) +
@@ -397,17 +400,17 @@ three_day %>%
        caption = 'Source: New York Times\n Created by Micah Williams') +
   theme_minimal()
 
-ggsave('plots/avg_change.png', width = 7, height = 5)
+# ggsave('plots/avg_change.png', width = 7, height = 5)
 
 # show states with most outlier counties
-three_day %>% 
-  filter(date == '2020-04-06',
-         sig_normalized > 0.97) %>%
-  select(-c(date, daily_infect_rate, state_code)) %>%
-  arrange(desc(sig_normalized)) %>%
-  group_by(state) %>%
-  count() %>%
-  arrange(desc(n))
+# three_day %>% 
+#   filter(date == '2020-04-06',
+#          sig_normalized > 0.97) %>%
+#   select(-c(date, daily_infect_rate, state_code)) %>%
+#   arrange(desc(sig_normalized)) %>%
+#   group_by(state) %>%
+#   count() %>%
+#   arrange(desc(n))
 ```
 
 ```{r death_rate}
